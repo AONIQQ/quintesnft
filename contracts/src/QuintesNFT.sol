@@ -139,6 +139,7 @@ library Strings {
         bytes memory buffer = new bytes(digits);
         while (value != 0) {
             digits -= 1;
+            // forge-lint: disable-next-line(unsafe-typecast)
             buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
             value /= 10;
         }
@@ -246,9 +247,14 @@ abstract contract Ownable is Context {
     /**
      * @dev Throws if called by any account other than the owner.
      */
+    // forge-lint: disable-next-line(unwrapped-modifier-logic)
     modifier onlyOwner() {
-        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _onlyOwner();
         _;
+    }
+
+    function _onlyOwner() internal view {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
     }
 
     /**
@@ -1272,6 +1278,7 @@ contract ERC721A is IERC721A {
      * Returns the auxiliary data for `owner`. (e.g. number of whitelist mint slots used).
      */
     function _getAux(address owner) internal view returns (uint64) {
+        // forge-lint: disable-next-line(unsafe-typecast)
         return uint64(_packedAddressData[owner] >> _BITPOS_AUX);
     }
 
@@ -1346,6 +1353,7 @@ contract ERC721A is IERC721A {
      * token will be the concatenation of the `baseURI` and the `tokenId`. Empty
      * by default, it can be overridden in child contracts.
      */
+    // forge-lint: disable-next-line(mixed-case-function)
     function _baseURI() internal view virtual returns (string memory) {
         return '';
     }
@@ -1424,9 +1432,12 @@ contract ERC721A is IERC721A {
      * @dev Returns the unpacked `TokenOwnership` struct from `packed`.
      */
     function _unpackedOwnership(uint256 packed) private pure returns (TokenOwnership memory ownership) {
+        // forge-lint: disable-next-line(unsafe-typecast)
         ownership.addr = address(uint160(packed));
+        // forge-lint: disable-next-line(unsafe-typecast)
         ownership.startTimestamp = uint64(packed >> _BITPOS_START_TIMESTAMP);
         ownership.burned = packed & _BITMASK_BURNED != 0;
+        // forge-lint: disable-next-line(unsafe-typecast)
         ownership.extraData = uint24(packed >> _BITPOS_EXTRA_DATA);
     }
 
@@ -1593,6 +1604,7 @@ contract ERC721A is IERC721A {
     ) public payable virtual override {
         uint256 prevOwnershipPacked = _packedOwnershipOf(tokenId);
 
+        // forge-lint: disable-next-line(unsafe-typecast)
         if (address(uint160(prevOwnershipPacked)) != from) revert TransferFromIncorrectOwner();
 
         (uint256 approvedAddressSlot, address approvedAddress) = _getApprovedSlotAndAddress(tokenId);
@@ -1744,6 +1756,7 @@ contract ERC721A is IERC721A {
      *
      * Returns whether the call correctly returned the expected magic value.
      */
+    // forge-lint: disable-next-line(mixed-case-function)
     function _checkContractOnERC721Received(
         address from,
         address to,
@@ -1794,6 +1807,7 @@ contract ERC721A is IERC721A {
             // - `numberMinted += quantity`.
             //
             // We can directly add to the `balance` and `numberMinted`.
+            // forge-lint: disable-next-line(incorrect-shift)
             _packedAddressData[to] += quantity * ((1 << _BITPOS_NUMBER_MINTED) | 1);
 
             // Updates:
@@ -1866,6 +1880,7 @@ contract ERC721A is IERC721A {
      *
      * Emits a {ConsecutiveTransfer} event.
      */
+    // forge-lint: disable-next-line(mixed-case-function)
     function _mintERC2309(address to, uint256 quantity) internal virtual {
         uint256 startTokenId = _currentIndex;
         if (to == address(0)) revert MintToZeroAddress();
@@ -1881,6 +1896,7 @@ contract ERC721A is IERC721A {
             // - `numberMinted += quantity`.
             //
             // We can directly add to the `balance` and `numberMinted`.
+            // forge-lint: disable-next-line(incorrect-shift)
             _packedAddressData[to] += quantity * ((1 << _BITPOS_NUMBER_MINTED) | 1);
 
             // Updates:
@@ -1966,6 +1982,7 @@ contract ERC721A is IERC721A {
     function _burn(uint256 tokenId, bool approvalCheck) internal virtual {
         uint256 prevOwnershipPacked = _packedOwnershipOf(tokenId);
 
+        // forge-lint: disable-next-line(unsafe-typecast)
         address from = address(uint160(prevOwnershipPacked));
 
         (uint256 approvedAddressSlot, address approvedAddress) = _getApprovedSlotAndAddress(tokenId);
@@ -1996,6 +2013,7 @@ contract ERC721A is IERC721A {
             //
             // We can directly decrement the balance, and increment the number burned.
             // This is equivalent to `packed -= 1; packed += 1 << _BITPOS_NUMBER_BURNED;`.
+            // forge-lint: disable-next-line(incorrect-shift)
             _packedAddressData[from] += (1 << _BITPOS_NUMBER_BURNED) - 1;
 
             // Updates:
@@ -2079,6 +2097,7 @@ contract ERC721A is IERC721A {
         address to,
         uint256 prevOwnershipPacked
     ) private view returns (uint256) {
+        // forge-lint: disable-next-line(unsafe-typecast)
         uint24 extraData = uint24(prevOwnershipPacked >> _BITPOS_EXTRA_DATA);
         return uint256(_extraData(from, to, extraData)) << _BITPOS_EXTRA_DATA;
     }
@@ -2092,6 +2111,7 @@ contract ERC721A is IERC721A {
      *
      * If you are writing GSN compatible contracts, you need to override this function.
      */
+    // forge-lint: disable-next-line(mixed-case-function)
     function _msgSenderERC721A() internal view virtual returns (address) {
         return msg.sender;
     }
@@ -2312,30 +2332,37 @@ abstract contract OperatorFilterer {
     }
 
     modifier onlyAllowedOperator(address from) virtual {
+        _onlyAllowedOperator(from);
+        _;
+    }
+
+    modifier onlyAllowedOperatorApproval(address operator) virtual {
+        _onlyAllowedOperatorApproval(operator);
+        _;
+    }
+
+    function _onlyAllowedOperator(address from) internal view {
         // Check registry code length to facilitate testing in environments without a deployed registry.
         if (address(OPERATOR_FILTER_REGISTRY).code.length > 0) {
             // Allow spending tokens from addresses with balance
             // Note that this still allows listings and marketplaces with escrow to transfer tokens if transferred
             // from an EOA.
             if (from == msg.sender) {
-                _;
                 return;
             }
             if (!OPERATOR_FILTER_REGISTRY.isOperatorAllowed(address(this), msg.sender)) {
                 revert OperatorNotAllowed(msg.sender);
             }
         }
-        _;
     }
 
-    modifier onlyAllowedOperatorApproval(address operator) virtual {
+    function _onlyAllowedOperatorApproval(address operator) internal view {
         // Check registry code length to facilitate testing in environments without a deployed registry.
         if (address(OPERATOR_FILTER_REGISTRY).code.length > 0) {
             if (!OPERATOR_FILTER_REGISTRY.isOperatorAllowed(address(this), operator)) {
                 revert OperatorNotAllowed(operator);
             }
         }
-        _;
     }
 }
 pragma solidity ^0.8.13;
@@ -2391,14 +2418,22 @@ contract QuintesNFT is ERC721A, Ownable, DefaultOperatorFilterer {
     // ====== Modifiers ======
 
     modifier supplyCompliance(uint256 _mintAmount) {
-        require(_mintAmount > 0, "Mint amount is zero");
-        require(_totalMinted() + _mintAmount <= maxSupply, "Max supply exceeded");
+        _supplyCompliance(_mintAmount);
         _;
     }
 
     modifier notPaused() {
-        require(!paused, "Contract is paused");
+        _notPaused();
         _;
+    }
+
+    function _supplyCompliance(uint256 _mintAmount) internal view {
+        require(_mintAmount > 0, "Mint amount is zero");
+        require(_totalMinted() + _mintAmount <= maxSupply, "Max supply exceeded");
+    }
+
+    function _notPaused() internal view {
+        require(!paused, "Contract is paused");
     }
 
     // ====== Public minting ======
@@ -2408,6 +2443,7 @@ contract QuintesNFT is ERC721A, Ownable, DefaultOperatorFilterer {
      * One wallet = one NFT total across the whole drop.
      * Allowlist is Merkle-based; leaf = keccak256(abi.encodePacked(wallet)).
      */
+    // forge-lint: disable-next-line(mixed-case-function)
     function mintGTD(bytes32[] calldata merkleProof)
         external
         payable
@@ -2419,6 +2455,7 @@ contract QuintesNFT is ERC721A, Ownable, DefaultOperatorFilterer {
         require(msg.value == price, "Incorrect ETH amount");
 
         // Verify allowlist membership
+        // forge-lint: disable-next-line(asm-keccak256)
         bytes32 leaf = keccak256(abi.encodePacked(msg.sender));
         require(
             MerkleProof.verify(merkleProof, gtdMerkleRoot, leaf),
@@ -2435,6 +2472,7 @@ contract QuintesNFT is ERC721A, Ownable, DefaultOperatorFilterer {
      * Any wallet can mint at most 1 NFT total (if they did NOT mint in GTD).
      * Leftover GTD supply + FCFS allocation all come from the same pool.
      */
+    // forge-lint: disable-next-line(mixed-case-function)
     function mintFCFS()
         external
         payable
@@ -2472,6 +2510,7 @@ contract QuintesNFT is ERC721A, Ownable, DefaultOperatorFilterer {
      * Enforces one wallet = one NFT total across the drop.
      * Useful to fulfill collab / ambassador allocations in one transaction.
      */
+    // forge-lint: disable-next-line(mixed-case-function)
     function airdropGTD(address[] calldata recipients)
         external
         onlyOwner
@@ -2578,6 +2617,7 @@ contract QuintesNFT is ERC721A, Ownable, DefaultOperatorFilterer {
             : "";
     }
 
+    // forge-lint: disable-next-line(mixed-case-function)
     function _baseURI() internal view virtual override returns (string memory) {
         return uriPrefix;
     }

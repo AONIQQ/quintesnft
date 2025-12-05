@@ -283,5 +283,5 @@ Etherscan:
 - Mainnet: https://etherscan.io
 - Sepolia: https://sepolia.etherscan.io
 
-Remix IDE: https://remix.ethereum.org
+
 ```

@@ -3,7 +3,6 @@
 ## Quick Start
 
 ```bash
-cd quintes-mint
 npm install
 npm run dev
 ```
@@ -184,7 +183,6 @@ Before deploying:
 
 Currently configured in `lib/wagmi.ts`:
 - Ethereum Mainnet (chainId: 1)
-- Arbitrum (chainId: 42161)
 - Sepolia Testnet (chainId: 11155111)
 
 ### Adding a New Network
@@ -203,29 +201,9 @@ export const config = createConfig({
 });
 ```
 
----
 
-## 6. Common Issues & Solutions
 
-### "Contract read failed"
-- Verify `NEXT_PUBLIC_CONTRACT_ADDRESS` is correct
-- Verify contract is deployed to the chain specified by `NEXT_PUBLIC_CHAIN_ID`
-- Check that contract ABI matches deployed contract
-
-### "User rejected transaction"
-- User cancelled in wallet - this is expected behavior
-
-### "Insufficient funds"
-- Wallet needs ETH for gas fees
-- For Sepolia: use a faucet to get test ETH
-
-### Merkle proof invalid on contract
-- Ensure the Merkle root in contract matches `getMerkleRoot()`
-- Verify address casing (checksummed vs lowercase)
-
----
-
-## 7. Production Deployment Checklist
+## 6. Production Deployment Checklist
 
 - [ ] Update `NEXT_PUBLIC_CHAIN_ID` to mainnet (1)
 - [ ] Deploy contract to mainnet
@@ -237,7 +215,7 @@ export const config = createConfig({
 
 ---
 
-## 8. File Structure Reference
+## 7. File Structure Reference
 
 ```
 quintes-mint/
@@ -275,11 +253,4 @@ quintes-mint/
     └── logo-light.svg        # Quintes logo
 ```
 
----
 
-## Need Help?
-
-- Check console for detailed error messages
-- Verify all environment variables are set
-- Ensure you're on the correct network
-- Check contract is not paused

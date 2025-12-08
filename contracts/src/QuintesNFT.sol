@@ -2381,8 +2381,67 @@ abstract contract DefaultOperatorFilterer is OperatorFilterer {
 
 pragma solidity >=0.7.0 <0.9.0;
 
-contract QuintesNFT is ERC721A, Ownable, DefaultOperatorFilterer {
+/**
+ * @dev Contract module that helps prevent reentrant calls.
+ * Simplified copy of OpenZeppelin ReentrancyGuard.
+ */
+abstract contract ReentrancyGuard {
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    modifier nonReentrant() {
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+        _status = _ENTERED;
+        _;
+        _status = _NOT_ENTERED;
+    }
+}
+
+/**
+ * @dev Interface for the NFT Royalty Standard.
+ */
+interface IERC2981 {
+    function royaltyInfo(uint256 tokenId, uint256 salePrice)
+        external
+        view
+        returns (address receiver, uint256 royaltyAmount);
+}
+
+contract QuintesNFT is ERC721A, Ownable, DefaultOperatorFilterer, ReentrancyGuard {
     using Strings for uint256;
+
+    // ====== Events ======
+    // Configuration Events
+    event MaxSupplyUpdated(uint256 oldSupply, uint256 newSupply, address indexed updatedBy);
+    event PriceUpdated(uint256 oldPrice, uint256 newPrice, address indexed updatedBy);
+    event MerkleRootUpdated(bytes32 indexed oldRoot, bytes32 indexed newRoot, address indexed updatedBy);
+    event UriPrefixUpdated(string oldPrefix, string newPrefix, address indexed updatedBy);
+    event UriSuffixUpdated(string oldSuffix, string newSuffix, address indexed updatedBy);
+    event PreRevealUriUpdated(string oldUri, string newUri, address indexed updatedBy);
+
+    // State Events
+    event RevealedStateChanged(bool newState, address indexed changedBy);
+    event PausedStateChanged(bool newState, address indexed changedBy);
+    event GtdPhaseStateChanged(bool newState, address indexed changedBy);
+    event FcfsPhaseStateChanged(bool newState, address indexed changedBy);
+
+    // Financial Events
+    event FundsWithdrawn(address indexed recipient, uint256 amount, uint256 timestamp);
+
+    // Mint Events
+    event MintedGTD(address indexed minter, uint256 tokenId, bytes32 merkleRoot);
+    event MintedFCFS(address indexed minter, uint256 tokenId);
+    event OwnerMinted(address indexed to, uint256 quantity, uint256 totalMinted);
+    event AirdropSkipped(address indexed recipient, string reason);
+    event AirdropCompleted(uint256 totalRecipients, uint256 successfulMints);
+
+    // Blacklist Events
+    event BlacklistUpdated(address indexed account, bool status);
 
     // ====== Metadata config ======
 
@@ -2392,8 +2451,15 @@ contract QuintesNFT is ERC721A, Ownable, DefaultOperatorFilterer {
 
     // ====== Supply / pricing ======
 
+    uint256 public constant MAX_OWNER_MINT_PER_TX = 50;
+    uint256 public constant MAX_OWNER_MINT_PER_WALLET = 100;
+    uint256 public constant MAX_AIRDROP_BATCH_SIZE = 100;
+    uint96 private constant _FEE_DENOMINATOR = 10000;
+
     uint256 public maxSupply = 1000;
     uint256 public price = 0 ether; // free mint by default
+    address private _royaltyReceiver;
+    uint96 private _royaltyFeeNumerator;
 
     // ====== Phases ======
     // GTD = guaranteed mint phase (allowlist / collabs / ambassadors)
@@ -2413,7 +2479,19 @@ contract QuintesNFT is ERC721A, Ownable, DefaultOperatorFilterer {
     // Global per-wallet limit: one wallet = one NFT total
     mapping(address => bool) public hasMinted;
 
-    constructor() ERC721A("Quintes", "QUINTES") {}
+    // Owner mint tracking
+    mapping(address => uint256) public ownerMintedToAddress;
+
+    // Blacklist
+    mapping(address => bool) public blacklisted;
+
+    // Mint counters
+    uint256 public gtdMintCount;
+    uint256 public fcfsMintCount;
+
+    constructor() ERC721A("Quintes", "QUINTES") {
+        _setDefaultRoyalty(owner(), 500); // 5%
+    }
 
     // ====== Modifiers ======
 
@@ -2424,6 +2502,11 @@ contract QuintesNFT is ERC721A, Ownable, DefaultOperatorFilterer {
 
     modifier notPaused() {
         _notPaused();
+        _;
+    }
+
+    modifier notBlacklisted() {
+        require(!blacklisted[msg.sender], "Address is blacklisted");
         _;
     }
 
@@ -2448,6 +2531,7 @@ contract QuintesNFT is ERC721A, Ownable, DefaultOperatorFilterer {
         external
         payable
         notPaused
+        notBlacklisted
         supplyCompliance(1)
     {
         require(gtdPhaseActive, "GTD phase not active");
@@ -2465,6 +2549,8 @@ contract QuintesNFT is ERC721A, Ownable, DefaultOperatorFilterer {
         gtdMinted[msg.sender] = true;
         hasMinted[msg.sender] = true;
         _safeMint(msg.sender, 1);
+        gtdMintCount++;
+        emit MintedGTD(msg.sender, _nextTokenId() - 1, gtdMerkleRoot);
     }
 
     /**
@@ -2477,6 +2563,7 @@ contract QuintesNFT is ERC721A, Ownable, DefaultOperatorFilterer {
         external
         payable
         notPaused
+        notBlacklisted
         supplyCompliance(1)
     {
         require(fcfsPhaseActive, "FCFS phase not active");
@@ -2486,6 +2573,8 @@ contract QuintesNFT is ERC721A, Ownable, DefaultOperatorFilterer {
         fcfsMinted[msg.sender] = true;
         hasMinted[msg.sender] = true;
         _safeMint(msg.sender, 1);
+        fcfsMintCount++;
+        emit MintedFCFS(msg.sender, _nextTokenId() - 1);
     }
 
     // ====== Owner / backend minting (for Quintes reserves, collabs, etc.) ======
@@ -2501,7 +2590,16 @@ contract QuintesNFT is ERC721A, Ownable, DefaultOperatorFilterer {
         onlyOwner
         supplyCompliance(quantity)
     {
+        require(quantity <= MAX_OWNER_MINT_PER_TX, "Exceeds per-tx limit");
+        require(
+            ownerMintedToAddress[to] + quantity <= MAX_OWNER_MINT_PER_WALLET,
+            "Exceeds per-wallet limit"
+        );
+
+        ownerMintedToAddress[to] += quantity;
         _safeMint(to, quantity);
+
+        emit OwnerMinted(to, quantity, ownerMintedToAddress[to]);
     }
 
     /**
@@ -2514,65 +2612,190 @@ contract QuintesNFT is ERC721A, Ownable, DefaultOperatorFilterer {
     function airdropGTD(address[] calldata recipients)
         external
         onlyOwner
+        returns (uint256 minted)
     {
         uint256 count = recipients.length;
-        require(count > 0, "No recipients");
+        require(count > 0 && count <= MAX_AIRDROP_BATCH_SIZE, "Invalid batch size");
         require(_totalMinted() + count <= maxSupply, "Max supply exceeded");
 
         for (uint256 i = 0; i < count; ++i) {
             address to = recipients[i];
-            require(!hasMinted[to], "Recipient already minted");
+
+            if (hasMinted[to]) {
+                emit AirdropSkipped(to, "Already minted");
+                continue;
+            }
+
+            if (to == address(0)) {
+                emit AirdropSkipped(to, "Zero address");
+                continue;
+            }
 
             gtdMinted[to] = true;
             hasMinted[to] = true;
             _safeMint(to, 1);
+            minted++;
+        }
+
+        if (minted > 0) {
+            gtdMintCount += minted;
+        }
+
+        emit AirdropCompleted(recipients.length, minted);
+    }
+
+    /**
+     * @notice Blacklist addresses to prevent minting.
+     * @param accounts Array of addresses to update
+     * @param status True to blacklist, false to unblacklist
+     */
+    function setBlacklisted(address[] calldata accounts, bool status) external onlyOwner {
+        uint256 length = accounts.length;
+        for (uint256 i = 0; i < length; i++) {
+            blacklisted[accounts[i]] = status;
+            emit BlacklistUpdated(accounts[i], status);
         }
     }
 
     // ====== Admin config ======
 
     function setGtdMerkleRoot(bytes32 _root) external onlyOwner {
+        bytes32 oldRoot = gtdMerkleRoot;
         gtdMerkleRoot = _root;
+        emit MerkleRootUpdated(oldRoot, _root, msg.sender);
     }
 
     function setUriPrefix(string memory _uriPrefix) external onlyOwner {
+        string memory oldPrefix = uriPrefix;
         uriPrefix = _uriPrefix;
+        emit UriPrefixUpdated(oldPrefix, _uriPrefix, msg.sender);
     }
 
     function setUriSuffix(string memory _uriSuffix) external onlyOwner {
+        string memory oldSuffix = uriSuffix;
         uriSuffix = _uriSuffix;
+        emit UriSuffixUpdated(oldSuffix, _uriSuffix, msg.sender);
     }
 
     function setPreRevealMetadataUri(string memory _preRevealMetadataUri) external onlyOwner {
+        string memory oldUri = preRevealMetadataUri;
         preRevealMetadataUri = _preRevealMetadataUri;
+        emit PreRevealUriUpdated(oldUri, _preRevealMetadataUri, msg.sender);
     }
 
     function setRevealed(bool _state) external onlyOwner {
         revealed = _state;
+        emit RevealedStateChanged(_state, msg.sender);
     }
 
     function setPaused(bool _state) external onlyOwner {
         paused = _state;
+        emit PausedStateChanged(_state, msg.sender);
     }
 
     function setPrice(uint256 _newPrice) external onlyOwner {
+        uint256 oldPrice = price;
         price = _newPrice;
+        emit PriceUpdated(oldPrice, _newPrice, msg.sender);
     }
 
     function setMaxSupply(uint256 _newSupply) external onlyOwner {
         require(_newSupply >= _totalMinted(), "New maxSupply < minted");
+        uint256 oldSupply = maxSupply;
         maxSupply = _newSupply;
+        emit MaxSupplyUpdated(oldSupply, _newSupply, msg.sender);
     }
 
     function setGtdPhaseActive(bool _state) external onlyOwner {
         gtdPhaseActive = _state;
+        emit GtdPhaseStateChanged(_state, msg.sender);
     }
 
     function setFcfsPhaseActive(bool _state) external onlyOwner {
         fcfsPhaseActive = _state;
+        emit FcfsPhaseStateChanged(_state, msg.sender);
+    }
+
+    /**
+     * @notice Set default royalty info (EIP-2981).
+     */
+    function setDefaultRoyalty(address receiver, uint96 feeNumerator) external onlyOwner {
+        _setDefaultRoyalty(receiver, feeNumerator);
     }
 
     // ====== View helpers ======
+
+    /**
+     * @notice Get comprehensive contract state for frontend display.
+     */
+    function getContractState()
+        external
+        view
+        returns (
+            uint256 totalMinted,
+            uint256 remainingSupply,
+            uint256 currentPrice,
+            bool isGtdActive,
+            bool isFcfsActive,
+            bool isPaused,
+            bool isRevealed
+        )
+    {
+        totalMinted = _totalMinted();
+        remainingSupply = maxSupply - totalMinted;
+        currentPrice = price;
+        isGtdActive = gtdPhaseActive;
+        isFcfsActive = fcfsPhaseActive;
+        isPaused = paused;
+        isRevealed = revealed;
+    }
+
+    /**
+     * @notice Check if an address can mint in current phase.
+     */
+    function getMintEligibility(address account)
+        external
+        view
+        returns (
+            bool canMintGtd,
+            bool canMintFcfs,
+            bool alreadyMinted,
+            bool isBlacklisted
+        )
+    {
+        alreadyMinted = hasMinted[account];
+        isBlacklisted = blacklisted[account];
+
+        canMintGtd = gtdPhaseActive && !alreadyMinted && !isBlacklisted && !paused;
+        canMintFcfs = fcfsPhaseActive && !alreadyMinted && !isBlacklisted && !paused;
+    }
+
+    /**
+     * @notice Get minting statistics for analytics.
+     */
+    function getMintStats()
+        external
+        view
+        returns (
+            uint256 gtdMints,
+            uint256 fcfsMints,
+            uint256 totalSupply,
+            uint256 maxSupplyValue
+        )
+    {
+        gtdMints = gtdMintCount;
+        fcfsMints = fcfsMintCount;
+        totalSupply = _totalMinted();
+        maxSupplyValue = maxSupply;
+    }
+
+    /**
+     * @notice EIP-2981 royalty info.
+     */
+    function royaltyInfo(uint256, uint256 salePrice) external view returns (address receiver, uint256 royaltyAmount) {
+        receiver = _royaltyReceiver;
+        royaltyAmount = (salePrice * _royaltyFeeNumerator) / _FEE_DENOMINATOR;
+    }
 
     function walletOfOwner(address _owner)
         public
@@ -2622,12 +2845,30 @@ contract QuintesNFT is ERC721A, Ownable, DefaultOperatorFilterer {
         return uriPrefix;
     }
 
+    function _setDefaultRoyalty(address receiver, uint96 feeNumerator) internal {
+        require(receiver != address(0), "Invalid receiver");
+        require(feeNumerator <= _FEE_DENOMINATOR, "Royalty fee too high");
+        _royaltyReceiver = receiver;
+        _royaltyFeeNumerator = feeNumerator;
+    }
+
+    /**
+     * @dev Override supportsInterface to include ERC2981.
+     */
+    function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
+        return
+            interfaceId == 0x2a55205a || // IERC2981
+            super.supportsInterface(interfaceId);
+    }
+
     // ====== Withdraw ======
 
-    function withdraw() external onlyOwner {
+    function withdraw() external onlyOwner nonReentrant {
         uint256 balance = address(this).balance;
-        (bool success, ) = payable(owner()).call{value: balance}("");
-        require(success, "Withdraw failed");
+        require(balance > 0, "No funds to withdraw");
+
+        Address.sendValue(payable(owner()), balance);
+        emit FundsWithdrawn(owner(), balance, block.timestamp);
     }
 
     // ====== Operator filter overrides (OpenSea etc.) ======
